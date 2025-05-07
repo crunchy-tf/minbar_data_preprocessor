@@ -1,4 +1,4 @@
-# FILE: Dockerfile (Adjusted for pre-downloaded NLTK data)
+# FILE: Dockerfile (Partial - NLTK Download Section Updated)
 
 # Stage 1: Base Image
 FROM python:3.10-slim-bullseye AS base
@@ -21,9 +21,7 @@ RUN apt-get update && \
     libxml2-dev \
     libxslt-dev && \
     # Create NLTK data directory early (permissions handled by root initially)
-    # Ensure the target directories exist before copying into them
-    mkdir -p $NLTK_DATA/corpora && \
-    mkdir -p $NLTK_DATA/tokenizers && \
+    mkdir -p $NLTK_DATA && \
     chmod -R 755 $NLTK_DATA && \
     # Clean up APT caches
     rm -rf /var/lib/apt/lists/*
@@ -38,26 +36,35 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# --- COPY Pre-downloaded NLTK Resources ---
-# Assumes 'nltk_pre_downloaded' directory is at the root of the build context
-# (i.e., alongside this Dockerfile).
-COPY ./nltk_pre_downloaded/corpora/omw-1.4 $NLTK_DATA/corpora/omw-1.4
-COPY ./nltk_pre_downloaded/corpora/stopwords $NLTK_DATA/corpora/stopwords
-COPY ./nltk_pre_downloaded/corpora/wordnet $NLTK_DATA/corpora/wordnet
-COPY ./nltk_pre_downloaded/tokenizers/punkt $NLTK_DATA/tokenizers/punkt
-COPY ./nltk_pre_downloaded/tokenizers/punkt_tab $NLTK_DATA/tokenizers/punkt_tab
+# --- Download Foundational NLP Resources (System-wide) ---
+# These layers are invalidated only if the pip install layer above was rebuilt.
+# Run as root to install to system paths defined by ENV vars.
 
-# --- Verification of NLTK Resources (Still a good idea) ---
-RUN python -c "import nltk; print('Verifying NLTK resources...'); \
-    nltk.data.find('corpora/omw-1.4'); \
-    nltk.data.find('corpora/stopwords'); \
-    nltk.data.find('corpora/wordnet'); \
-    nltk.data.find('tokenizers/punkt'); \
-    nltk.data.find('tokenizers/punkt_tab'); \
+# NLTK - Download each resource individually for better error isolation
+RUN echo "Downloading NLTK punkt..." && \
+    python -m nltk.downloader -d $NLTK_DATA punkt || (echo "Failed to download NLTK punkt" && exit 1) && \
+    echo "Downloading NLTK stopwords..." && \
+    python -m nltk.downloader -d $NLTK_DATA stopwords || (echo "Failed to download NLTK stopwords" && exit 1) && \
+    echo "Downloading NLTK wordnet..." && \
+    python -m nltk.downloader -d $NLTK_DATA wordnet || (echo "Failed to download NLTK wordnet" && exit 1) && \
+    echo "Downloading NLTK omw-1.4..." && \
+    python -m nltk.downloader -d $NLTK_DATA omw-1.4 || (echo "Failed to download NLTK omw-1.4" && exit 1) && \
+    echo "Downloading NLTK punkt_tab..." && \
+    python -m nltk.downloader -d $NLTK_DATA punkt_tab || (echo "Failed to download NLTK punkt_tab" && exit 1) && \
+    # Verification (keep this as it's a good check)
+    echo "Verifying NLTK resources..." && \
+    python -c "import nltk; \
+    nltk.data.path.append('$NLTK_DATA'); \
+    print(f'NLTK data paths: {nltk.data.path}'); \
+    nltk.data.find('tokenizers/punkt'); print('punkt OK'); \
+    nltk.data.find('corpora/stopwords'); print('stopwords OK'); \
+    nltk.data.find('corpora/wordnet'); print('wordnet OK'); \
+    nltk.data.find('corpora/omw-1.4'); print('omw-1.4 OK'); \
+    nltk.data.find('tokenizers/punkt_tab'); print('punkt_tab OK'); \
     print('NLTK resource verification successful.')" || \
-    (echo "NLTK resource verification failed after COPY!" && exit 1)
+    (echo "NLTK resource verification failed after download!" && exit 1)
 
-# spaCy (These still download during build, usually more reliable than NLTK's downloader)
+# spaCy
 RUN python -m spacy download en_core_web_sm && \
     python -m spacy download fr_core_news_sm
 
