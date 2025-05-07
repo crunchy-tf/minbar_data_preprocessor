@@ -1,44 +1,47 @@
-# FILE: cloudbuild.yaml (ULTRA-SIMPLIFIED - Values updated for your project)
+# FILE: cloudbuild.yaml (Adapted for FLAT project structure - all source files at repo root)
 
 steps:
   # 1. Build Docker image
+  # The current working directory for Cloud Build steps is /workspace (repo root) by default.
+  # Docker will use /workspace as the build context.
   - name: 'gcr.io/cloud-builders/docker'
-    dir: 'services/data_preprocessor' # Context for Docker build (where Dockerfile is)
     args: [
         'build',
-        '-t', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}', # YOUR REGION, PROJECT_ID, AR_REPO, SERVICE_NAME
-        '.' # Docker build context is the 'dir' directory
+        # Image tag: REGION-docker.pkg.dev/PROJECT_ID/ARTIFACT_REPO_NAME/SERVICE_NAME:COMMIT_SHA
+        '-t', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}',
+        # '-f', 'Dockerfile', # Optional: Docker looks for 'Dockerfile' by default in the context.
+        '.' # Docker build context is the current directory (/workspace, i.e., repo root)
     ]
 
   # 2. Push image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: [
-        'push', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}' # YOUR REGION, PROJECT_ID, AR_REPO, SERVICE_NAME
+        'push', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}'
     ]
 
   # 3. Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     args: [
-        'run', 'deploy', 'data-preprocessor', # This will be your Cloud Run service name
+        'run', 'deploy', 'data-preprocessor', # Cloud Run service name
         '--image=europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}', # Image to deploy
-        '--region=europe-west9', # YOUR REGION
+        '--region=europe-west9', # Deployment region for Cloud Run service
         '--platform=managed',
-        '--port=8002', # Port your application listens on
-        '--allow-unauthenticated', # For easy testing
+        '--port=8002', # Port your application listens on (defined in Dockerfile EXPOSE)
+        '--allow-unauthenticated', # For easy testing access
         '--set-env-vars-file=.env.yaml', # Assumes .env.yaml is in the repo root
-        # Consider adding these back if your app needs more resources (NLP often does):
-        # '--memory=2Gi',
-        # '--cpu=1',
-        # '--min-instances=0', # Scale to zero for testing
-        # '--max-instances=1'  # Limit scaling for testing
+        '--memory=2Gi', # Recommended memory for NLP applications
+        '--cpu=1',      # Recommended CPU
+        '--min-instances=0', # Scale to zero for cost savings during inactivity (for testing)
+        '--max-instances=1'  # Limit scaling for testing to control costs
     ]
 
-# Recommended to declare the image built
+# Lists images that will be built by this pipeline.
 images:
   - 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}'
 
-# Recommended timeout for builds that download NLP models
-timeout: '1800s' # 30 minutes
+# Overall timeout for the build process.
+timeout: '1800s' # 30 minutes (generous for NLP model downloads in Dockerfile)
 
+# Logging options for Cloud Build.
 options:
-  logging: CLOUD_LOGGING_ONLY # Tells Cloud Build to only send logs to Cloud Logging
+  logging: CLOUD_LOGGING_ONLY # Sends logs only to Cloud Logging, simplifies bucket config.
