@@ -1,7 +1,7 @@
 # FILE: cloudbuild.yaml (Adapted for FLAT project structure - all source files at repo root)
 
 steps:
-  # 1. Build Docker image
+  # 0. Build Docker image
   # The current working directory for Cloud Build steps is /workspace (repo root) by default.
   # Docker will use /workspace as the build context.
   - name: 'gcr.io/cloud-builders/docker'
@@ -13,14 +13,15 @@ steps:
         '.' # Docker build context is the current directory (/workspace, i.e., repo root)
     ]
 
-  # 2. Push image to Artifact Registry
+  # 1. Push image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: [
         'push', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}'
     ]
 
-  # 3. Deploy to Cloud Run
+  # 2. Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
     args: [
         'run', 'deploy', 'data-preprocessor', # Cloud Run service name
         '--image=europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}', # Image to deploy
