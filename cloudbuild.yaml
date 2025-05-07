@@ -1,0 +1,41 @@
+# FILE: cloudbuild.yaml (ULTRA-SIMPLIFIED - Values updated for your project)
+
+steps:
+  # 1. Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'services/data_preprocessor' # Context for Docker build (where Dockerfile is)
+    args: [
+        'build',
+        '-t', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}', # YOUR REGION, PROJECT_ID, AR_REPO, SERVICE_NAME
+        '.' # Docker build context is the 'dir' directory
+    ]
+
+  # 2. Push image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+        'push', 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}' # YOUR REGION, PROJECT_ID, AR_REPO, SERVICE_NAME
+    ]
+
+  # 3. Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args: [
+        'run', 'deploy', 'data-preprocessor', # This will be your Cloud Run service name
+        '--image=europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}', # Image to deploy
+        '--region=europe-west9', # YOUR REGION
+        '--platform=managed',
+        '--port=8002', # Port your application listens on
+        '--allow-unauthenticated', # For easy testing
+        '--set-env-vars-file=.env.yaml', # Assumes .env.yaml is in the repo root
+        # Consider adding these back if your app needs more resources (NLP often does):
+        # '--memory=2Gi',
+        # '--cpu=1',
+        # '--min-instances=0', # Scale to zero for testing
+        # '--max-instances=1'  # Limit scaling for testing
+    ]
+
+# Recommended to declare the image built
+images:
+  - 'europe-west9-docker.pkg.dev/minbar-459007/docker-repo/data-preprocessor:${SHORT_SHA}'
+
+# Recommended timeout for builds that download NLP models
+timeout: '1800s' # 30 minutes
