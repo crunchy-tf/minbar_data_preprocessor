@@ -29,7 +29,7 @@ steps:
         '--platform=managed',
         '--port=8002', # Port your application listens on (defined in Dockerfile EXPOSE)
         '--allow-unauthenticated', # For easy testing access
-        '--set-env-vars-file=.env.yaml', # Assumes .env.yaml is in the repo root
+        '--env-vars-file=.env.yaml', # <--- CORRECTED THIS LINE (was --set-env-vars-file)
         '--memory=2Gi', # Recommended memory for NLP applications
         '--cpu=1',      # Recommended CPU
         '--min-instances=0', # Scale to zero for cost savings during inactivity (for testing)
