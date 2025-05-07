@@ -39,3 +39,6 @@ images:
 
 # Recommended timeout for builds that download NLP models
 timeout: '1800s' # 30 minutes
+
+options:
+  logging: CLOUD_LOGGING_ONLY # Tells Cloud Build to only send logs to Cloud Logging
