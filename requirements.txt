@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+motor
+asyncpg
+pydantic
+pydantic-settings
+python-dotenv
+apscheduler
+spacy>=3.0.0,<4.0.0
+nltk>=3.6.0
+langdetect
+beautifulsoup4
+lxml # For faster HTML parsing
+stanza # Replaces camel-tools
+python-dateutil # For parsing timestamps in main_processor
+# Optional: loguru (if you keep the try/except import in config.py)
+loguru
