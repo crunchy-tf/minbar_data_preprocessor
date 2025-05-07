@@ -2,15 +2,16 @@
 from fastapi import FastAPI, HTTPException, status, Response
 from contextlib import asynccontextmanager
 import asyncio
-import json # <--- THIS LINE WAS ADDED
+import json
 
 # Use shared logger and settings
 from app.core.config import settings, logger
 
 # Import DB connection handlers (now async)
 from app.db.mongo_db import connect_mongo, close_mongo, mongo_reader # Import reader instance
-# Import get_pool to check PG status and _pool for the trigger check (if needed, though get_pool is better)
-from app.db.postgres_db import connect_postgres, close_postgres, get_pool, _pool
+# Import get_pool to check PG status
+from app.db.postgres_db import connect_postgres, close_postgres, get_pool
+import asyncpg # For specific exception types in health check
 
 # Import scheduler functions
 from app.services.scheduler_service import start_scheduler, stop_scheduler, scheduler
@@ -40,15 +41,17 @@ async def lifespan(app: FastAPI):
     mongo_conn_ok = not isinstance(results[0], Exception)
     pg_conn_ok = not isinstance(results[1], Exception)
 
-    if not mongo_conn_ok: logger.critical(f"MongoDB connection failed: {results[0]}")
-    if not pg_conn_ok: logger.critical(f"PostgreSQL connection failed: {results[1]}")
+    if not mongo_conn_ok:
+        logger.critical(f"MongoDB connection failed during startup: {results[0]}")
+    if not pg_conn_ok:
+        logger.critical(f"PostgreSQL connection failed during startup: {results[1]}")
 
     # Proceed only if essential connections are up
     if mongo_conn_ok and pg_conn_ok:
-        logger.info("Database connections established.")
+        logger.info("Database connections established successfully during startup.")
         await start_scheduler() # Start scheduler after successful DB connections
     else:
-        logger.critical("Essential database connections failed. Service will not start scheduler.")
+        logger.critical("One or more essential database connections failed. Scheduler will NOT start.")
 
     yield # Application runs here
 
@@ -77,8 +80,8 @@ async def read_root():
 @app.get("/health", tags=["Health"], summary="Service Health Check")
 async def health_check():
     """Performs health checks on database connections and scheduler."""
-    db_mongo_status = "disconnected"
-    db_postgres_status = "disconnected"
+    db_mongo_status = "error (unknown)"
+    db_postgres_status = "error (unknown)"
     scheduler_status = "stopped"
     overall_status = "error"
     http_status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -89,23 +92,27 @@ async def health_check():
             await mongo_reader.client.admin.command('ping')
             db_mongo_status = "connected"
         except Exception as e:
-            db_mongo_status = f"error (ping failed: {e})"
+            db_mongo_status = f"error (ping failed: {type(e).__name__})"
+            logger.warning(f"Health check: MongoDB ping failed: {e}") # Log the specific error
     else:
         db_mongo_status = "error (no client)"
 
     # Check PostgreSQL Pool
     try:
-        # Check if the pool object exists and is not closed
-        pool = await get_pool() # Ensures pool is attempted to be initialized if None
+        # get_pool will raise ConnectionError if pool is None, closed, or unusable
+        pool = await get_pool()
         async with pool.acquire() as conn:
-           await conn.execute("SELECT 1")
+           await conn.fetchval("SELECT 1") # Minimal query to check liveliness
         db_postgres_status = "connected"
-    except ConnectionError as ce: # Catch specific pool/connection errors
-         logger.warning(f"Health check PG connection error: {ce}")
-         db_postgres_status = "error (pool unavailable or connection failed)"
-    except Exception as e:
-        logger.error(f"Health check PG query failed: {e}", exc_info=True) # Log unexpected errors
-        db_postgres_status = f"error (query failed: {e})"
+    except ConnectionError as ce: # Catch specific pool/connection errors from get_pool or connect_postgres
+         logger.warning(f"Health check: PostgreSQL connection/pool issue: {ce}")
+         db_postgres_status = f"error ({ce})" # Include exception message
+    except asyncpg.PostgresError as pe: # Catch specific asyncpg operational errors during query
+        logger.warning(f"Health check: PostgreSQL query failed: {pe}", exc_info=False) # Don't need full stack for health check
+        db_postgres_status = f"error (query failed: {type(pe).__name__})"
+    except Exception as e: # Catch any other unexpected errors
+        logger.warning(f"Health check: Unexpected PostgreSQL error: {e}", exc_info=False)
+        db_postgres_status = f"error (unexpected: {type(e).__name__})"
 
 
     # Check Scheduler
@@ -117,6 +124,10 @@ async def health_check():
     if is_healthy:
         overall_status = "ok"
         http_status_code = status.HTTP_200_OK
+    else:
+        # Log current unhealthy status for easier debugging from health check pings
+        logger.warning(f"Health check failed: Mongo='{db_mongo_status}', PG='{db_postgres_status}', Scheduler='{scheduler_status}'")
+
 
     return Response(
         status_code=http_status_code,
@@ -135,7 +146,7 @@ async def health_check():
 @app.post("/trigger-processing", tags=["Actions"], status_code=status.HTTP_202_ACCEPTED)
 async def trigger_manual_processing():
     """Manually triggers one background data processing job."""
-    logger.warning("Manual processing job triggered via API.")
+    logger.info("Manual processing job trigger requested via API.") # Changed to info
 
     # Ensure the job exists before triggering
     job = scheduler.get_job("data_processing_cycle_job")
@@ -144,19 +155,27 @@ async def trigger_manual_processing():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled job not found.")
 
     # Improved Check: Ensure DB clients/pools seem available before triggering
-    mongo_ok = bool(mongo_reader.client)
+    mongo_ok = False
+    if mongo_reader.client:
+        try:
+            await mongo_reader.client.admin.command('ping')
+            mongo_ok = True
+        except Exception:
+            mongo_ok = False # Ping failed or no client
+            
     pg_ok = False
     try:
-        # Attempt to get the pool; might raise ConnectionError if init failed badly
+        # Use the same robust check as in /health
         pool = await get_pool()
-        # Quick check if pool object exists and seems usable (might not catch all edge cases)
-        pg_ok = bool(pool and not pool.is_closing())
-    except ConnectionError:
-        pg_ok = False # If get_pool fails, PG is not OK
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        pg_ok = True
+    except Exception: # Catch ConnectionError from get_pool or any other error
+        pg_ok = False
 
     if not (mongo_ok and pg_ok):
          logger.error(f"Cannot trigger job: Database connections are not healthy (MongoOK: {mongo_ok}, PGOK: {pg_ok}).")
-         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connections not ready.")
+         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connections not ready. Check /health endpoint.")
 
 
     try:
