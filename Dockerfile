@@ -1,3 +1,4 @@
+# Dockerfile
 # Generated based on request from 2025-05-07
 # Dockerfile for minbar-services/data-preprocessor
 
@@ -36,12 +37,9 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Download NLP models and resources
-# NLTK: Based on required_nltk_datasets in app/processing/nlp_tasks.py
-# Note: 'punkt_tab' is listed in the Python code but is not a standard NLTK downloadable package.
-# This Dockerfile downloads 'punkt'. If your application strictly requires a separate 'punkt_tab' resource
-# that isn't part of the 'punkt' package, you'll need to ensure it's acquired and an NLTK lookup for it succeeds.
-RUN mkdir -p ${NLTK_DATA} && \
-    python -m nltk.downloader -d ${NLTK_DATA} punkt stopwords wordnet omw-1.4
+# NLTK: Use a script for robust downloading and verification
+COPY download_nltk_data.py /tmp/download_nltk_data.py
+RUN python /tmp/download_nltk_data.py ${NLTK_DATA}
 
 # spaCy: Models used in app/processing/nlp_tasks.py (en_core_web_sm, fr_core_news_sm)
 # These will be installed into the Python site-packages directory.
@@ -51,7 +49,7 @@ RUN python -m spacy download en_core_web_sm && \
 # Stanza: Arabic model, downloaded to STANZA_RESOURCES_DIR
 # The app/processing/nlp_tasks.py expects models in this directory.
 RUN mkdir -p ${STANZA_RESOURCES_DIR} && \
-    python -c "import stanza; stanza.download('ar', model_dir='${STANZA_RESOURCES_DIR}', processors='tokenize,lemma', logging_level='INFO', verbose=True)"
+    python -c "import stanza; stanza.download('ar', model_dir='${STANZA_RESOURCES_DIR}', processors='tokenize,lemma,mwt', logging_level='INFO', verbose=True)"
 
 
 # ---- Stage 2: Final image ----

@@ -28,14 +28,9 @@ except ImportError:
 from app.core.config import settings, logger
 
 # --- NLTK Path Configuration ---
-# Ensure NLTK knows where to find its data, matching Dockerfile's NLTK_DATA
-_EXPECTED_NLTK_DATA_PATH = "/usr/local/share/nltk_data"
-if _EXPECTED_NLTK_DATA_PATH not in nltk.data.path:
-    logger.info(f"NLTK data path '{_EXPECTED_NLTK_DATA_PATH}' not found in nltk.data.path by default ({nltk.data.path}). Appending it.")
-    nltk.data.path.append(_EXPECTED_NLTK_DATA_PATH)
-    logger.info(f"NLTK data paths are now: {nltk.data.path}")
-else:
-    logger.info(f"NLTK data path '{_EXPECTED_NLTK_DATA_PATH}' is already in nltk.data.path: {nltk.data.path}")
+# NLTK should automatically pick up the NLTK_DATA environment variable set in the Dockerfile.
+# Logging the path NLTK is using can be helpful for debugging.
+logger.info(f"NLTK will search for data in these paths (includes NLTK_DATA env var if set): {nltk.data.path}")
 
 # --- Global NLP Resources (Lazy Loaded) ---
 _nlp_spacy_en: Optional[spacy.Language] = None
@@ -46,14 +41,14 @@ _nltk_fr_stopwords: Optional[set] = None
 _nltk_ar_stopwords: Optional[set] = None
 _lemmatizer_en: Optional[WordNetLemmatizer] = None
 _resources_loaded = False
-STANZA_RESOURCES_DIR = "/app/.stanza_resources"
+STANZA_RESOURCES_DIR = "/app/.stanza_resources" # This should match ENV var in Dockerfile
 
 # --- Resource Loading Functions ---
 def _load_nltk_resources():
     """Loads required NLTK data, relying on build download and configured path."""
     global _nltk_en_stopwords, _nltk_fr_stopwords, _nltk_ar_stopwords, _lemmatizer_en
 
-    # Path is now configured globally above, so NLTK should use it.
+    # NLTK_DATA env var should make NLTK aware of the main data directory.
     # Log current paths again just to be sure at the point of loading.
     logger.debug(f"Inside _load_nltk_resources, NLTK paths: {nltk.data.path}")
 
@@ -61,22 +56,32 @@ def _load_nltk_resources():
     try:
         logger.info("Verifying required NLTK resources are available...")
         all_found_locally = True
+        # NLTK_DATA (e.g., /usr/local/share/nltk_data) should be in nltk.data.path
+        # If it's not, something is fundamentally wrong with env var propagation or NLTK setup.
+        # The Dockerfile sets NLTK_DATA.
+
         for dataset in required_nltk_datasets:
             try:
-                expected_path_prefix = ""
-                if dataset == 'stopwords': expected_path_prefix = 'corpora/'
-                elif dataset == 'punkt': expected_path_prefix = 'tokenizers/'
-                elif dataset == 'wordnet': expected_path_prefix = 'corpora/'
-                elif dataset == 'omw-1.4': expected_path_prefix = 'corpora/'
+                # Construct the resource name NLTK uses for find()
+                # e.g., 'tokenizers/punkt' or 'corpora/wordnet'
+                resource_path_in_nltk = ""
+                if dataset == 'punkt':
+                     resource_path_in_nltk = f'tokenizers/{dataset}'
+                elif dataset == 'stopwords':
+                     resource_path_in_nltk = f'corpora/{dataset}'
+                elif dataset == 'wordnet':
+                     resource_path_in_nltk = f'corpora/{dataset}' # WordNet is expected as corpora/wordnet
+                elif dataset == 'omw-1.4':
+                     resource_path_in_nltk = f'corpora/{dataset}' # OMW is expected as corpora/omw-1.4
 
-                nltk.data.find(f'{expected_path_prefix}{dataset}')
-                logger.debug(f"NLTK resource '{dataset}' found.")
+                nltk.data.find(resource_path_in_nltk)
+                logger.debug(f"NLTK resource '{dataset}' (as '{resource_path_in_nltk}') found.")
             except LookupError:
                 all_found_locally = False
                 # More detailed error message
                 logger.critical(
-                    f"CRITICAL: NLTK resource '{dataset}' (expected at e.g., '{_EXPECTED_NLTK_DATA_PATH}/{expected_path_prefix}{dataset}') "
-                    f"not found! Ensure Dockerfile download step succeeded and that NLTK is searching in the correct paths. "
+                    f"CRITICAL: NLTK resource '{dataset}' (searched as '{resource_path_in_nltk}') "
+                    f"not found! Ensure Dockerfile download step succeeded and NLTK_DATA env var is correctly set and used. "
                     f"Current NLTK search paths: {nltk.data.path}"
                 )
 
@@ -133,12 +138,14 @@ def _load_stanza_models():
 
     logger.info("Loading Stanza Arabic model...")
     try:
-        _nlp_stanza_ar = stanza.Pipeline('ar', dir=STANZA_RESOURCES_DIR, processors='tokenize,lemma', use_gpu=False)
-        logger.info(f"Loaded Stanza Arabic pipeline from {STANZA_RESOURCES_DIR}.")
+        # STANZA_RESOURCES_DIR is set as an ENV var in Dockerfile, Stanza should pick it up.
+        # If not, you can explicitly pass model_dir=STANZA_RESOURCES_DIR
+        _nlp_stanza_ar = stanza.Pipeline('ar', dir=STANZA_RESOURCES_DIR, processors='tokenize,lemma,mwt', use_gpu=False)
+        logger.info(f"Loaded Stanza Arabic pipeline using dir: {STANZA_RESOURCES_DIR}.")
         return True
     except Exception as e:
-        logger.critical(f"Failed to load Stanza Arabic model from {STANZA_RESOURCES_DIR}: {e}", exc_info=True)
-        logger.error("Ensure the model was downloaded correctly in the Dockerfile step.")
+        logger.critical(f"Failed to load Stanza Arabic model (dir: {STANZA_RESOURCES_DIR}): {e}", exc_info=True)
+        logger.error("Ensure the model was downloaded correctly in the Dockerfile step and STANZA_RESOURCES_DIR env var is correct.")
         return False
 
 def ensure_nlp_resources():
@@ -154,9 +161,12 @@ def ensure_nlp_resources():
     spacy_ok = _load_spacy_models()
     stanza_ok = _load_stanza_models()
 
-    _resources_loaded = nltk_ok and spacy_ok and stanza_ok # Stanza is critical for AR
+    _resources_loaded = nltk_ok and spacy_ok and (stanza_ok if STANZA_AVAILABLE else True) # Stanza is optional if not installed
+    if not STANZA_AVAILABLE and not stanza_ok: # Only critical if Stanza IS available but failed to load
+         _resources_loaded = False
+
     if not _resources_loaded:
-         logger.critical(f"One or more essential NLP resources failed to load: NLTK_OK={nltk_ok}, Spacy_OK={spacy_ok}, Stanza_OK={stanza_ok}")
+         logger.critical(f"One or more essential NLP resources failed to load: NLTK_OK={nltk_ok}, Spacy_OK={spacy_ok}, Stanza_OK={stanza_ok (STANZA_AVAILABLE=STANZA_AVAILABLE)}")
          logger.critical("NLP processing capabilities will be limited or unavailable.")
     else:
          logger.info("All required NLP resources loaded successfully.")
@@ -200,8 +210,8 @@ def process_text_nlp(text: str, lang: str) -> Dict[str, List[str]]:
             tokens_processed = [token.text for token in doc if token.is_alpha and not token.is_stop]
             lemmas = [token.lemma_ for token in doc if token.is_alpha and not token.is_stop]
         elif lang == 'ar' and STANZA_AVAILABLE and _nlp_stanza_ar and _nltk_ar_stopwords:
-            if not _nlp_stanza_ar:
-                logger.error("Skipping Arabic NLP: Stanza model failed to load.")
+            if not _nlp_stanza_ar: # Should be caught by _resources_loaded, but double check
+                logger.error("Skipping Arabic NLP: Stanza model not available/loaded.")
                 return {"tokens": [], "tokens_processed": [], "lemmas": []}
             doc = _nlp_stanza_ar(text)
             raw_tokens = []
@@ -223,7 +233,8 @@ def process_text_nlp(text: str, lang: str) -> Dict[str, List[str]]:
             if lang not in ['en', 'fr', 'ar']:
                 logger.warning(f"Skipping NLP processing for unsupported language: '{lang}'.")
             else:
-                 logger.error(f"Skipping NLP processing for lang '{lang}' due to missing/failed model.")
+                 # This case implies a resource specific to the lang failed (e.g., _nlp_spacy_en is None)
+                 logger.error(f"Skipping NLP processing for lang '{lang}' due to missing/failed model for this language.")
     except Exception as e:
         logger.error(f"Unexpected error during NLP processing pipeline for lang '{lang}': {e}", exc_info=True)
         return {"tokens": [], "tokens_processed": [], "lemmas": []}
