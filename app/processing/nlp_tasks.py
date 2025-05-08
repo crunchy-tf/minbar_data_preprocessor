@@ -1,6 +1,5 @@
 # services/data_preprocessor/app/processing/nlp_tasks.py
 from typing import Tuple, List, Optional, Dict, Any
-# No os import needed now
 
 # Language Detection
 from langdetect import detect, DetectorFactory, LangDetectException
@@ -44,29 +43,29 @@ def _load_nltk_resources():
     """Loads required NLTK data, relying on build download."""
     global _nltk_en_stopwords, _nltk_fr_stopwords, _nltk_ar_stopwords, _lemmatizer_en
 
-    # *** REMOVED nltk.data.path manipulation - rely on system default paths ***
-    # logger.debug(f"NLTK search paths: {nltk.data.path}") # Keep for debugging if needed
-
-    required_nltk_datasets = ['punkt', 'stopwords', 'wordnet', 'omw-1.4', 'punkt_tab']
+    # MODIFIED: Removed 'punkt_tab' and adjusted check logic
+    required_nltk_datasets = ['punkt', 'stopwords', 'wordnet', 'omw-1.4']
     try:
         logger.info("Verifying required NLTK resources are available...")
         all_found_locally = True
         for dataset in required_nltk_datasets:
             try:
                 # Determine the correct find path based on NLTK conventions
-                if dataset == 'stopwords': nltk.data.find(f'corpora/{dataset}')
-                elif dataset in ['punkt', 'punkt_tab']: nltk.data.find(f'tokenizers/{dataset}')
-                elif dataset == 'wordnet': nltk.data.find(f'corpora/{dataset}')
-                elif dataset == 'omw-1.4': nltk.data.find(f'corpora/{dataset}')
+                if dataset == 'stopwords':
+                    nltk.data.find(f'corpora/{dataset}')
+                elif dataset == 'punkt': # Now only checks for 'punkt'
+                    nltk.data.find(f'tokenizers/{dataset}')
+                elif dataset == 'wordnet':
+                    nltk.data.find(f'corpora/{dataset}')
+                elif dataset == 'omw-1.4':
+                    nltk.data.find(f'corpora/{dataset}')
+                logger.debug(f"NLTK resource '{dataset}' found.")
             except LookupError:
                 all_found_locally = False
-                # Log critical error if not found, as build should guarantee it
                 logger.critical(f"CRITICAL: NLTK resource '{dataset}' not found! Ensure Dockerfile download step succeeded and verified.")
-                # Exit immediately if essential resource is missing
-                return False
+                # Continue checking other resources to provide a full picture
 
         if not all_found_locally:
-             # This part should ideally not be reached if the checks above work
              logger.error("One or more essential NLTK datasets are missing. Check Docker build logs.")
              return False
 
@@ -85,7 +84,6 @@ def _load_nltk_resources():
         logger.error(f"Unexpected error during NLTK resource loading/verification: {e}", exc_info=True)
         return False
 
-# --- _load_spacy_models and _load_stanza_models remain unchanged ---
 def _load_spacy_models():
     """Loads spaCy models."""
     global _nlp_spacy_en, _nlp_spacy_fr
@@ -127,7 +125,7 @@ def _load_stanza_models():
         logger.critical(f"Failed to load Stanza Arabic model from {STANZA_RESOURCES_DIR}: {e}", exc_info=True)
         logger.error("Ensure the model was downloaded correctly in the Dockerfile step.")
         return False
-# --- ensure_nlp_resources, detect_language, process_text_nlp remain unchanged from previous version ---
+
 def ensure_nlp_resources():
     """Loads all necessary NLP resources if not already loaded."""
     global _resources_loaded

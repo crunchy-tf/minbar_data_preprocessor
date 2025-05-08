@@ -2,7 +2,7 @@
 import os
 import logging
 from pydantic_settings import BaseSettings
-from pydantic import Field, MongoDsn
+from pydantic import Field # MongoDsn is no longer imported
 from typing import Optional
 
 # Use Loguru if installed, otherwise fallback to standard logging
@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field("INFO", validation_alias='LOG_LEVEL')
 
     # MongoDB Source Config
-    mongo_uri: MongoDsn = Field(..., validation_alias='MONGO_URI')
+    # MODIFIED: Changed MongoDsn to str
+    mongo_uri: str = Field(..., validation_alias='MONGO_URI')
     mongo_db_name: str = Field(..., validation_alias='MONGO_DB_NAME')
     mongo_raw_collection: str = Field(..., validation_alias='MONGO_RAW_COLLECTION')
     batch_size: int = Field(100, gt=0, validation_alias='BATCH_SIZE')
@@ -45,7 +46,6 @@ class Settings(BaseSettings):
     postgres_table: str = Field("processed_documents", validation_alias='POSTGRES_TABLE')
 
     # NLP Config - Removed camel_tools specific setting
-    # camel_tools_mle_disambiguator: str = Field("calima-msa-r13", validation_alias='CAMEL_TOOLS_MLE_DISAMBIGUATOR')
     mark_as_processed_in_mongo: bool = Field(True, validation_alias='MARK_AS_PROCESSED_IN_MONGO')
 
     # Scheduler Config
@@ -73,13 +73,12 @@ except NameError: # For standard logging
     logging.getLogger().setLevel(settings.LOG_LEVEL.upper())
 
 # Suppress overly verbose logs from dependencies
-# logging.getLogger("camel_tools").setLevel(logging.WARNING) # Removed
 logging.getLogger("nltk").setLevel(logging.WARNING)
 logging.getLogger("spacy").setLevel(logging.WARNING)
 logging.getLogger("langdetect").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("stanza").setLevel(logging.WARNING) # <-- ADDED
+logging.getLogger("stanza").setLevel(logging.WARNING)
 
 logger.info(f"Configuration loaded for {settings.SERVICE_NAME}. Log level: {settings.LOG_LEVEL.upper()}")
 logger.debug(f"MongoDB Target: {settings.mongo_db_name}/{settings.mongo_raw_collection}")
