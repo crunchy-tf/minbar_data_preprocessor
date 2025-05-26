@@ -1,7 +1,7 @@
 # services/data_preprocessor/app/main_processor.py
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime # Ensure datetime is imported for timestamping
 from typing import Dict, Any, List, Optional
 from bson import ObjectId
 
@@ -17,7 +17,7 @@ from app.processing.nlp_tasks import detect_language, process_text_nlp, ensure_n
 # Import model and utilities
 from app.models.data_models import ProcessedDocument
 import dateutil.parser
-import dateutil.tz
+# import dateutil.tz # Not explicitly used, can be removed if not needed elsewhere
 
 # --- Helper function ---
 def extract_text_and_metadata(raw_doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -46,17 +46,21 @@ def extract_text_and_metadata(raw_doc: Dict[str, Any]) -> Optional[Dict[str, Any
         original_data = {}
 
     metadata["text"] = original_data.get("text")
-    ts_str = original_data.get("created_time")
-    metadata["original_url"] = original_data.get("attached_link")
+    ts_str = original_data.get("created_time") # Assuming 'created_time' is the field from Data365
+    metadata["original_url"] = original_data.get("attached_link") # Example, adjust if different
 
     if ts_str:
         try:
+            # Ensure created_time is parsed correctly. Data365 might provide Unix timestamp or ISO string.
+            # If it's a Unix timestamp (integer/float):
+            # metadata["original_timestamp"] = datetime.fromtimestamp(ts_str, tz=timezone.utc)
+            # If it's an ISO string (as assumed by dateutil.parser.isoparse):
             metadata["original_timestamp"] = dateutil.parser.isoparse(ts_str)
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not parse timestamp '{ts_str}' for doc {metadata['raw_mongo_id']}: {e}")
 
     if not isinstance(metadata["text"], str):
-         metadata["text"] = ""
+         metadata["text"] = "" # Ensure text is always a string
 
     logger.trace(f"Extracted metadata for {metadata['raw_mongo_id']}")
     return metadata
@@ -64,17 +68,24 @@ def extract_text_and_metadata(raw_doc: Dict[str, Any]) -> Optional[Dict[str, Any
 # --- Core Processing Function (now separate) ---
 async def process_single_document(raw_doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Processes a single raw document. Returns dict for insertion or None on error."""
-    doc_id = raw_doc.get("_id", "N/A")
+    doc_id = raw_doc.get("_id", "N/A") # Get ID for logging before potential failure
     try:
         logger.trace(f"Processing document: {doc_id}")
         extracted = extract_text_and_metadata(raw_doc)
-        if not extracted: return None
+        if not extracted:
+            logger.warning(f"Extraction failed for document, skipping: {doc_id}")
+            return None
 
         cleaned_text = basic_text_clean(extracted["text"])
-        detected_lang = detect_language(cleaned_text) if cleaned_text else None
+        detected_lang = detect_language(cleaned_text) if cleaned_text else None # Only detect if there's text
+        
         nlp_results = {"tokens": [], "tokens_processed": [], "lemmas": []}
-        if cleaned_text and detected_lang:
+        # Only run full NLP if text exists AND language is detected AND supported
+        if cleaned_text and detected_lang and detected_lang in ['en', 'fr', 'ar']: # Check for supported lang here
             nlp_results = process_text_nlp(cleaned_text, detected_lang)
+        elif cleaned_text and detected_lang: # Language detected but not supported for full NLP
+             logger.debug(f"Language '{detected_lang}' detected for doc {doc_id} but not supported for full NLP. Basic processing only.")
+
 
         processed = ProcessedDocument(
             raw_mongo_id=extracted["raw_mongo_id"],
@@ -89,9 +100,10 @@ async def process_single_document(raw_doc: Dict[str, Any]) -> Optional[Dict[str,
             tokens_processed=nlp_results["tokens_processed"],
             lemmas=nlp_results["lemmas"],
             original_url=extracted["original_url"]
+            # The new 'nlp_analyzer_v1_status' field will be added by the DB schema default or ORM
         )
         logger.trace(f"Successfully processed document {doc_id}")
-        return processed.model_dump()
+        return processed.model_dump() # Use model_dump() for Pydantic v2
 
     except Exception as e:
         logger.error(f"Failed to process document {doc_id}: {e}", exc_info=True)
@@ -106,27 +118,36 @@ async def scheduled_processing_job():
     """
     job_start_time = time.time()
     logger.info("--- Scheduled Processing Job Starting ---")
-    processed_count_job = 0
-    inserted_count_job = 0
-    processed_ids_mongo_job = [] # Store ObjectIds of docs attempted insert
+    total_processed_in_job = 0
+    total_inserted_in_job = 0
+    total_marked_in_mongo_job = 0
 
     # Ensure NLP resources are loaded (idempotent check)
-    if not ensure_nlp_resources():
+    if not ensure_nlp_resources(): # This is called at app startup but good to have a check here too
         logger.error("Cannot run processing job: Failed to load essential NLP resources.")
-        return # Don't run if resources are missing
+        return 
 
     try:
-        total_docs_in_run = 0
+        current_run_processed_doc_count = 0 # Count docs processed in this specific trigger/run
         while True: # Loop to process all available data in batches
             batch_start_time = time.time()
             logger.debug(f"Fetching batch of up to {settings.batch_size} documents...")
+            
+            # Ensure mongo_reader and collection are available
+            if not mongo_reader.collection:
+                logger.error("MongoDB collection is not available. Cannot fetch documents. Aborting job.")
+                break
+            
             raw_docs = await fetch_unprocessed_documents(settings.batch_size)
+            
             if not raw_docs:
-                if total_docs_in_run == 0: logger.info("No unprocessed documents found in MongoDB for this run.")
-                else: logger.info("Finished processing all available documents for this run.")
-                break # Exit loop
+                if current_run_processed_doc_count == 0: # First check in this run
+                    logger.info("No unprocessed documents found in MongoDB for this run.")
+                else: # Subsequent checks in this run
+                    logger.info("Finished processing all available documents for this run.")
+                break # Exit while loop if no documents are found
 
-            total_docs_in_run += len(raw_docs)
+            current_run_processed_doc_count += len(raw_docs)
             fetch_duration = time.time() - batch_start_time
             logger.info(f"Fetched {len(raw_docs)} docs in {fetch_duration:.2f}s.")
 
@@ -135,61 +156,64 @@ async def scheduled_processing_job():
             process_tasks = [process_single_document(doc) for doc in raw_docs]
             results = await asyncio.gather(*process_tasks, return_exceptions=True)
 
-            current_batch_ids_processed = [] # Track IDs successfully processed in this batch
+            # Collect IDs of documents that were successfully processed and are candidates for PG insertion
+            mongo_ids_for_pg_insert_and_marking: List[ObjectId] = []
             for i, result in enumerate(results):
-                 raw_doc_id = raw_docs[i].get("_id")
+                 raw_doc_id = raw_docs[i].get("_id") # Should always be an ObjectId if fetched
                  if isinstance(result, Exception):
-                      logger.error(f"Error processing document {raw_doc_id}: {result}")
-                 elif result is not None:
+                      logger.error(f"Error processing document {raw_doc_id}: {result}", exc_info=result)
+                 elif result is not None: # Successfully processed
                       processed_batch_data.append(result)
                       if raw_doc_id and isinstance(raw_doc_id, ObjectId):
-                           current_batch_ids_processed.append(raw_doc_id)
-
-            processing_duration = time.time() - batch_start_time - fetch_duration
-            logger.info(f"Processed {len(processed_batch_data)} valid docs from batch in {processing_duration:.2f}s.")
+                           mongo_ids_for_pg_insert_and_marking.append(raw_doc_id)
+            
+            processing_end_time = time.time()
+            processing_duration = processing_end_time - batch_start_time - fetch_duration
+            logger.info(f"Processed {len(processed_batch_data)} valid docs from batch of {len(raw_docs)} in {processing_duration:.2f}s.")
 
             # --- Insert batch into PostgreSQL ---
             if processed_batch_data:
                 insert_start_time = time.time()
-                inserted_count_batch = await insert_processed_data_batch(processed_batch_data) # Now async
+                # Pass only the successfully processed data to insert_processed_data_batch
+                inserted_count_batch = await insert_processed_data_batch(processed_batch_data)
                 insert_duration = time.time() - insert_start_time
-                # We count successful processing attempts, insert_processed_data_batch returns attempt count
-                inserted_count_job += inserted_count_batch
-                processed_count_job += len(processed_batch_data)
+                
+                if inserted_count_batch > 0:
+                    logger.info(f"PostgreSQL insert attempt for {len(processed_batch_data)} docs resulted in {inserted_count_batch} actual inserts/updates, took {insert_duration:.2f}s.")
+                    total_inserted_in_job += inserted_count_batch
+                    
+                    # --- MARK DOCUMENTS AS PROCESSED FOR THIS BATCH IN MONGO ---
+                    # Only mark documents that were successfully prepared and sent for PG insertion attempt
+                    if mongo_ids_for_pg_insert_and_marking:
+                        mark_start_time_batch = time.time()
+                        modified_mongo_count_batch = await mark_documents_as_processed(mongo_ids_for_pg_insert_and_marking)
+                        mark_duration_batch = time.time() - mark_start_time_batch
+                        logger.info(f"MongoDB marking for batch ({len(mongo_ids_for_pg_insert_and_marking)} docs) took {mark_duration_batch:.2f}s. Successfully marked: {modified_mongo_count_batch}")
+                        total_marked_in_mongo_job += modified_mongo_count_batch
+                    else:
+                        logger.info("No document IDs from this batch were eligible for MongoDB marking.")
+                else:
+                    logger.warning(f"No documents were inserted into PostgreSQL for this batch of {len(processed_batch_data)} processed items. Not marking in MongoDB.")
 
-                # Add IDs of docs *attempted* for insert to the list for MongoDB update
-                # This assumes an insert attempt implies successful processing
-                processed_ids_mongo_job.extend(current_batch_ids_processed)
-                logger.info(f"PostgreSQL insert attempt for {inserted_count_batch} docs took {insert_duration:.2f}s.")
+                total_processed_in_job += len(processed_batch_data) # Count successfully processed items
+
             elif len(raw_docs) > 0 :
-                 # If docs were fetched but none were processed successfully
-                 logger.warning(f"No valid documents processed in this batch ({len(raw_docs)} fetched) to insert.")
-            else: # Should not happen if raw_docs check passed
-                 logger.debug("No documents processed in this batch.")
-
-
+                 logger.warning(f"No valid documents resulted from processing this batch of {len(raw_docs)} fetched raw documents.")
+            
             batch_duration = time.time() - batch_start_time
             logger.debug(f"Batch finished in {batch_duration:.2f}s.")
+            
+            # If BATCH_SIZE is small and processing is fast, this loop might run very quickly.
+            # A small, optional sleep can prevent hammering DBs if needed,
+            # but usually, the natural I/O wait times are sufficient.
+            # await asyncio.sleep(0.1) # e.g., 100ms delay between batches
 
-            # Safety break removed for production, scheduler interval controls frequency
-
-
-    except ConnectionError as ce:
-         logger.error(f"Database connection error during job: {ce}. Job will retry on next schedule.")
+    except ConnectionError as ce: # Catch connection errors from DB interactions
+         logger.error(f"Database connection error during job: {ce}. Job will retry on next schedule if applicable.", exc_info=True)
     except Exception as e:
+        # Catch any other unexpected error during the job
         logger.exception(f"Critical unexpected error during scheduled processing job: {e}")
     finally:
-        # Mark documents AFTER the loop finishes or if an error occurs mid-loop
-        if processed_ids_mongo_job:
-            mark_start_time = time.time()
-            # Pass only unique IDs
-            unique_ids_to_mark = list(set(processed_ids_mongo_job))
-            modified_mongo_count = await mark_documents_as_processed(unique_ids_to_mark)
-            mark_duration = time.time() - mark_start_time
-            logger.info(f"MongoDB marking attempt for {len(unique_ids_to_mark)} unique docs took {mark_duration:.2f}s. Modified: {modified_mongo_count}")
-        elif total_docs_in_run > 0 : # Log if processing happened but nothing to mark
-             logger.info("No documents were successfully processed to mark in MongoDB.")
-
         job_duration = time.time() - job_start_time
-        logger.info(f"--- Scheduled Processing Job Finished. Duration: {job_duration:.2f}s ---")
-        logger.info(f"Job Summary - Docs Processed: {processed_count_job}, Insert Attempts: {inserted_count_job}, Marked in Mongo: {len(set(processed_ids_mongo_job)) if processed_ids_mongo_job else 0}")
+        logger.info(f"--- Scheduled Processing Job Finished (or errored). Duration: {job_duration:.2f}s ---")
+        logger.info(f"Job Summary - Total Docs Successfully Processed: {total_processed_in_job}, Total Docs Inserted/Updated in PG: {total_inserted_in_job}, Total Docs Marked in Mongo: {total_marked_in_mongo_job}")
