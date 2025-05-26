@@ -9,7 +9,7 @@ from bson import ObjectId
 from app.core.config import settings, logger
 
 # Import DB functions (now async)
-from app.db.mongo_db import fetch_unprocessed_documents, mark_documents_as_processed
+from app.db.mongo_db import fetch_unprocessed_documents, mark_documents_as_processed, mongo_reader # <<< MODIFIED: Added mongo_reader
 from app.db.postgres_db import insert_processed_data_batch
 # Import processing functions
 from app.processing.cleaning import basic_text_clean
@@ -134,7 +134,7 @@ async def scheduled_processing_job():
             logger.debug(f"Fetching batch of up to {settings.batch_size} documents...")
             
             # Ensure mongo_reader and collection are available
-            if not mongo_reader.collection:
+            if not mongo_reader.collection: # <<< Check uses the imported mongo_reader
                 logger.error("MongoDB collection is not available. Cannot fetch documents. Aborting job.")
                 break
             
@@ -203,9 +203,8 @@ async def scheduled_processing_job():
             batch_duration = time.time() - batch_start_time
             logger.debug(f"Batch finished in {batch_duration:.2f}s.")
             
-            # If BATCH_SIZE is small and processing is fast, this loop might run very quickly.
-            # A small, optional sleep can prevent hammering DBs if needed,
-            # but usually, the natural I/O wait times are sufficient.
+            # Optional: Add a small sleep if you want to be very cautious about hammering DBs,
+            # but usually not needed if batch_size and scheduler interval are reasonable.
             # await asyncio.sleep(0.1) # e.g., 100ms delay between batches
 
     except ConnectionError as ce: # Catch connection errors from DB interactions
