@@ -9,7 +9,7 @@ from bson import ObjectId
 from app.core.config import settings, logger
 
 # Import DB functions (now async)
-from app.db.mongo_db import fetch_unprocessed_documents, mark_documents_as_processed, mongo_reader # <<< MODIFIED: Added mongo_reader
+from app.db.mongo_db import fetch_unprocessed_documents, mark_documents_as_processed, mongo_reader
 from app.db.postgres_db import insert_processed_data_batch
 # Import processing functions
 from app.processing.cleaning import basic_text_clean
@@ -134,9 +134,9 @@ async def scheduled_processing_job():
             logger.debug(f"Fetching batch of up to {settings.batch_size} documents...")
             
             # Ensure mongo_reader and collection are available
-            if not mongo_reader.collection: # <<< Check uses the imported mongo_reader
+            if mongo_reader.collection is None: # <<< CORRECTED CHECK
                 logger.error("MongoDB collection is not available. Cannot fetch documents. Aborting job.")
-                break
+                break # Exit the while loop if collection is None
             
             raw_docs = await fetch_unprocessed_documents(settings.batch_size)
             
